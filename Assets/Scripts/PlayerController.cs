@@ -20,6 +20,13 @@ public class PlayerController : NetworkBehaviour
     [SyncVar(hook = nameof(OnScoreChanged))]
     public int score = 0;
 
+    // --- FITUR BARU: Modul 5 Combat Settings ---
+    [Header("Combat Settings")]
+    [SerializeField] private GameObject bulletPrefab;
+    [SerializeField] private Transform firePoint;
+    [SerializeField] private ParticleSystem muzzleFlashVFX;
+    // -------------------------------------------
+
     private void Start()
     {
         if (isLocalPlayer)
@@ -70,7 +77,7 @@ public class PlayerController : NetworkBehaviour
 
         HandleMovement();
 
-        // Simulasi input keyboard K & L
+        // Simulasi input keyboard K & L bawaan sebelumnya
         if (Input.GetKeyDown(KeyCode.K))
         {
             CmdTakeDamage(10);
@@ -80,6 +87,13 @@ public class PlayerController : NetworkBehaviour
         {
             CmdAddScore(5);
         }
+
+        // --- FITUR BARU: Input Menembak ---
+        if (Input.GetButtonDown("Fire1") || Input.GetKeyDown(KeyCode.Space))
+        {
+            CmdShoot();
+        }
+        // ----------------------------------
     }
 
     private void HandleMovement()
@@ -95,6 +109,39 @@ public class PlayerController : NetworkBehaviour
             transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
         }
     }
+
+    // --- FITUR BARU: Logika Menembak (Mirror) ---
+    [Command]
+    private void CmdShoot()
+    {
+        if (bulletPrefab == null || firePoint == null) return;
+
+        // Spawn peluru nyata di dunia permainan melalui Server
+        GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
+        
+        // Daftarkan peluru ke dalam jaringan
+        NetworkServer.Spawn(bulletInstance);
+
+        // Putar efek visual di seluruh Client
+        RpcPlayShootEffects();
+    }
+
+    [ClientRpc]
+    private void RpcPlayShootEffects()
+    {
+        if (muzzleFlashVFX != null)
+        {
+            muzzleFlashVFX.Play();
+        }
+    }
+
+    // Dipanggil oleh peluru saat mengenai player ini (Hanya jalan di Server)
+    [Server]
+    public void TakeDamage(int damageAmount)
+    {
+        health = Mathf.Max(0, health - damageAmount);
+    }
+    // --------------------------------------------
 
     [Command]
     private void CmdTakeDamage(int damageAmount)
