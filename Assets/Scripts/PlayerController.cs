@@ -2,16 +2,19 @@ using Mirror;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using System.Collections;
 
 public class PlayerController : NetworkBehaviour
 {
-    [Header("Movement Settings")]
+    [Header("Platformer Movement Settings")]
     [SerializeField] private float moveSpeed = 5f;
+    [SerializeField] private float jumpForce = 7f;
     [SerializeField] private float rotationSpeed = 720f;
 
     [Header("UI References")]
     [SerializeField] private Slider healthSlider;
     [SerializeField] private TextMeshProUGUI scoreText;
+    private TextMeshProUGUI winLoseText; // Dicari otomatis, tidak perlu drag manual
 
     [Header("Network Sync Variables")]
     [SyncVar(hook = nameof(OnHealthChanged))]
@@ -20,21 +23,24 @@ public class PlayerController : NetworkBehaviour
     [SyncVar(hook = nameof(OnScoreChanged))]
     public int score = 0;
 
-    // --- FITUR BARU: Modul 5 Combat Settings ---
-    [Header("Combat Settings")]
-    [SerializeField] private GameObject bulletPrefab;
-    [SerializeField] private Transform firePoint;
-    [SerializeField] private ParticleSystem muzzleFlashVFX;
-    // -------------------------------------------
+    private Rigidbody rb;
 
     private void Start()
     {
+        rb = GetComponent<Rigidbody>();
+
         if (isLocalPlayer)
         {
             GetComponent<Renderer>().material.color = Color.green;
-            float randomX = Random.Range(-3f, 3f);
-            float randomZ = Random.Range(-3f, 3f);
-            transform.position = new Vector3(randomX, 0.5f, randomZ);
+            // Spawn di X = -9 sesuai permintaan Anda
+            transform.position = new Vector3(-9f, 3f, 0f); 
+
+            // OTOMATIS MENCARI TEXT UI BERDASARKAN NAMA DI SCENE
+            GameObject winTextObj = GameObject.Find("WinLoseText");
+            if (winTextObj != null)
+            {
+                winLoseText = winTextObj.GetComponent<TextMeshProUGUI>();
+            }
         }
         else
         {
@@ -43,32 +49,15 @@ public class PlayerController : NetworkBehaviour
 
         UpdateHealthUI(health, health);
         UpdateScoreUI(score, score);
+
+        if (winLoseText != null) winLoseText.text = "";
+
+        SharedCamera.activePlayers.Add(transform);
     }
 
-    private void OnHealthChanged(int oldHealth, int newHealth)
+    private void OnDestroy()
     {
-        UpdateHealthUI(oldHealth, newHealth);
-    }
-
-    private void OnScoreChanged(int oldScore, int newScore)
-    {
-        UpdateScoreUI(oldScore, newScore);
-    }
-
-    private void UpdateHealthUI(int oldVal, int newVal)
-    {
-        if (healthSlider != null)
-        {
-            healthSlider.value = newVal;
-        }
-    }
-
-    private void UpdateScoreUI(int oldVal, int newVal)
-    {
-        if (scoreText != null)
-        {
-            scoreText.text = "Score: " + newVal;
-        }
+        SharedCamera.activePlayers.Remove(transform);
     }
 
     private void Update()
@@ -76,24 +65,13 @@ public class PlayerController : NetworkBehaviour
         if (!isLocalPlayer) return;
 
         HandleMovement();
-
-        // Simulasi input keyboard K & L bawaan sebelumnya
-        if (Input.GetKeyDown(KeyCode.K))
+        HandleJump();
+        
+        // LOSE CONDITION: Ketika player jatuh ke bawah (Y < -10)
+        if (transform.position.y < -10f)
         {
-            CmdTakeDamage(10);
+            CmdTakeDamage(100); 
         }
-
-        if (Input.GetKeyDown(KeyCode.L))
-        {
-            CmdAddScore(5);
-        }
-
-        // --- FITUR BARU: Input Menembak ---
-        if (Input.GetButtonDown("Fire1") || Input.GetKeyDown(KeyCode.Space))
-        {
-            CmdShoot();
-        }
-        // ----------------------------------
     }
 
     private void HandleMovement()
@@ -110,48 +88,57 @@ public class PlayerController : NetworkBehaviour
         }
     }
 
-    // --- FITUR BARU: Logika Menembak (Mirror) ---
-    [Command]
-    private void CmdShoot()
+    private void HandleJump()
     {
-        if (bulletPrefab == null || firePoint == null) return;
-
-        // Spawn peluru nyata di dunia permainan melalui Server
-        GameObject bulletInstance = Instantiate(bulletPrefab, firePoint.position, firePoint.rotation);
-        
-        // Daftarkan peluru ke dalam jaringan
-        NetworkServer.Spawn(bulletInstance);
-
-        // Putar efek visual di seluruh Client
-        RpcPlayShootEffects();
-    }
-
-    [ClientRpc]
-    private void RpcPlayShootEffects()
-    {
-        if (muzzleFlashVFX != null)
+        bool isGrounded = Physics.Raycast(transform.position, Vector3.down, 1.1f);
+        if (Input.GetButtonDown("Jump") && isGrounded)
         {
-            muzzleFlashVFX.Play();
+            rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
         }
     }
 
-    // Dipanggil oleh peluru saat mengenai player ini (Hanya jalan di Server)
-    [Server]
-    public void TakeDamage(int damageAmount)
+    private void OnHealthChanged(int oldHealth, int newHealth)
     {
-        health = Mathf.Max(0, health - damageAmount);
+        UpdateHealthUI(oldHealth, newHealth);
+
+        if (isLocalPlayer && newHealth <= 0)
+        {
+            StartCoroutine(TampilkanPesan("YOU LOSE!", Color.red));
+            
+            transform.position = new Vector3(-9f, 3f, 0f);
+            rb.velocity = Vector3.zero; 
+            CmdResetHealth();
+        }
     }
-    // --------------------------------------------
+
+    public void PicuKondisiMenang()
+    {
+        StartCoroutine(TampilkanPesan("YOU WIN!", Color.green));
+        
+        transform.position = new Vector3(-9f, 3f, 0f);
+        rb.velocity = Vector3.zero;
+        CmdResetHealth();
+    }
+
+    private IEnumerator TampilkanPesan(string pesan, Color warna)
+    {
+        if (winLoseText != null)
+        {
+            winLoseText.text = pesan;
+            winLoseText.color = warna;
+            yield return new WaitForSeconds(3f);
+            winLoseText.text = "";
+        }
+    }
 
     [Command]
-    private void CmdTakeDamage(int damageAmount)
-    {
-        health = Mathf.Max(0, health - damageAmount);
-    }
-
+    public void CmdResetHealth() { health = 100; }
+    private void OnScoreChanged(int oldScore, int newScore) { UpdateScoreUI(oldScore, newScore); }
+    private void UpdateHealthUI(int oldVal, int newVal) { if (healthSlider != null) healthSlider.value = newVal; }
+    private void UpdateScoreUI(int oldVal, int newVal) { if (scoreText != null) scoreText.text = "Score: " + newVal; }
+    
     [Command]
-    private void CmdAddScore(int scoreAmount)
-    {
-        score += scoreAmount;
-    }
+    public void CmdTakeDamage(int damageAmount) { health = Mathf.Max(0, health - damageAmount); }
+    [Command]
+    public void CmdAddScore(int scoreAmount) { score += scoreAmount; }
 }
