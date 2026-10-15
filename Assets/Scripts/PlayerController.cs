@@ -4,12 +4,14 @@ using UnityEngine.UI;
 using TMPro;
 using System.Collections;
 
+[RequireComponent(typeof(Rigidbody))]
 public class PlayerController : NetworkBehaviour
 {
     [Header("Platformer Movement Settings")]
     [SerializeField] private float moveSpeed = 5f;
     [SerializeField] private float jumpForce = 7f;
     [SerializeField] private float rotationSpeed = 720f;
+    [SerializeField] private float groundCheckDistance = 1.1f;
 
     [Header("UI References")]
     [SerializeField] private Slider healthSlider;
@@ -23,19 +25,28 @@ public class PlayerController : NetworkBehaviour
     [SyncVar(hook = nameof(OnScoreChanged))]
     public int score = 0;
 
-    private Rigidbody rb;
+    private static readonly Vector3 SpawnPoint = new Vector3(-9f, 3f, 0f);
+    private const float FallLimitY = -10f;
 
-    private void Start()
+    private Rigidbody rb;
+    private float moveInput;
+    private bool jumpRequested;
+    private bool deathRequested;
+
+    private void Awake()
     {
         rb = GetComponent<Rigidbody>();
 
+        rb.constraints = RigidbodyConstraints.FreezePositionZ | RigidbodyConstraints.FreezeRotation;
+    }
+
+    private void Start()
+    {
         if (isLocalPlayer)
         {
             GetComponent<Renderer>().material.color = Color.green;
-            // Spawn di X = -9 sesuai permintaan Anda
-            transform.position = new Vector3(-9f, 3f, 0f); 
+            ResetToSpawn();
 
-            // OTOMATIS MENCARI TEXT UI BERDASARKAN NAMA DI SCENE
             GameObject winTextObj = GameObject.Find("WinLoseText");
             if (winTextObj != null)
             {
@@ -52,7 +63,8 @@ public class PlayerController : NetworkBehaviour
 
         if (winLoseText != null) winLoseText.text = "";
 
-        SharedCamera.activePlayers.Add(transform);
+        if (!SharedCamera.activePlayers.Contains(transform))
+            SharedCamera.activePlayers.Add(transform);
     }
 
     private void OnDestroy()
@@ -64,59 +76,93 @@ public class PlayerController : NetworkBehaviour
     {
         if (!isLocalPlayer) return;
 
-        HandleMovement();
-        HandleJump();
-        
-        // LOSE CONDITION: Ketika player jatuh ke bawah (Y < -10)
-        if (transform.position.y < -10f)
+        moveInput = Input.GetAxisRaw("Horizontal");
+
+        if (Input.GetButtonDown("Jump") && IsGrounded())
         {
-            CmdTakeDamage(100); 
+            jumpRequested = true;
+        }
+
+        HandleFacing();
+
+
+        if (!deathRequested && transform.position.y < FallLimitY)
+        {
+            deathRequested = true;
+            CmdTakeDamage(100);
         }
     }
 
-    private void HandleMovement()
+    private void FixedUpdate()
     {
-        float horizontal = Input.GetAxis("Horizontal");
-        float vertical = Input.GetAxis("Vertical");
-        Vector3 moveDirection = new Vector3(horizontal, 0f, vertical).normalized;
+        if (!isLocalPlayer) return;
 
-        if (moveDirection.magnitude >= 0.1f)
-        {
-            transform.Translate(moveDirection * moveSpeed * Time.deltaTime, Space.World);
-            Quaternion targetRotation = Quaternion.LookRotation(moveDirection, Vector3.up);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
-        }
-    }
+        // Gerak lewat velocity (menghormati collision), Y dibiarkan dikelola gravitasi, Z selalu 0
+        Vector3 v = rb.velocity;
+        v.x = moveInput * moveSpeed;
+        v.z = 0f;
+        rb.velocity = v;
 
-    private void HandleJump()
-    {
-        bool isGrounded = Physics.Raycast(transform.position, Vector3.down, 1.1f);
-        if (Input.GetButtonDown("Jump") && isGrounded)
+        if (jumpRequested)
         {
+            jumpRequested = false;
             rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
         }
+
+        // Pengaman: paksa Z tetap 0 jika ada yang menggesernya (mis. spawn/NetworkTransform)
+        if (Mathf.Abs(rb.position.z) > 0.0001f)
+        {
+            Vector3 p = rb.position;
+            p.z = 0f;
+            rb.position = p;
+        }
+    }
+
+    private bool IsGrounded()
+    {
+        return Physics.Raycast(transform.position, Vector3.down, groundCheckDistance);
+    }
+
+    // Karakter hanya menghadap kanan (+X) atau kiri (-X)
+    private void HandleFacing()
+    {
+        if (Mathf.Abs(moveInput) < 0.01f) return;
+
+        float targetYaw = moveInput > 0f ? 90f : -90f;
+        Quaternion targetRotation = Quaternion.Euler(0f, targetYaw, 0f);
+        transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+    }
+
+    private void ResetToSpawn()
+    {
+        rb.velocity = Vector3.zero;
+        rb.position = SpawnPoint;
+        transform.position = SpawnPoint;
     }
 
     private void OnHealthChanged(int oldHealth, int newHealth)
     {
         UpdateHealthUI(oldHealth, newHealth);
 
-        if (isLocalPlayer && newHealth <= 0)
+        if (!isLocalPlayer) return;
+
+        if (newHealth <= 0)
         {
             StartCoroutine(TampilkanPesan("YOU LOSE!", Color.red));
-            
-            transform.position = new Vector3(-9f, 3f, 0f);
-            rb.velocity = Vector3.zero; 
+            ResetToSpawn();
             CmdResetHealth();
+        }
+        else
+        {
+            // Health sudah dipulihkan server -> boleh mati lagi
+            deathRequested = false;
         }
     }
 
     public void PicuKondisiMenang()
     {
         StartCoroutine(TampilkanPesan("YOU WIN!", Color.green));
-        
-        transform.position = new Vector3(-9f, 3f, 0f);
-        rb.velocity = Vector3.zero;
+        ResetToSpawn();
         CmdResetHealth();
     }
 
@@ -133,12 +179,14 @@ public class PlayerController : NetworkBehaviour
 
     [Command]
     public void CmdResetHealth() { health = 100; }
+
     private void OnScoreChanged(int oldScore, int newScore) { UpdateScoreUI(oldScore, newScore); }
     private void UpdateHealthUI(int oldVal, int newVal) { if (healthSlider != null) healthSlider.value = newVal; }
     private void UpdateScoreUI(int oldVal, int newVal) { if (scoreText != null) scoreText.text = "Score: " + newVal; }
-    
+
     [Command]
     public void CmdTakeDamage(int damageAmount) { health = Mathf.Max(0, health - damageAmount); }
+
     [Command]
     public void CmdAddScore(int scoreAmount) { score += scoreAmount; }
 }
