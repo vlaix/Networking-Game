@@ -25,6 +25,7 @@ public class PlayerController : NetworkBehaviour
     [Header("Timer Settings")]
     private float elapsedTime = 0f;
     private bool isTimerRunning = false;
+    private bool hasReachedFinish = false;
 
     private Rigidbody rb;
 
@@ -37,8 +38,16 @@ public class PlayerController : NetworkBehaviour
             GetComponent<Renderer>().material.color = Color.green;
             transform.position = new Vector3(-9f, 3f, 0f);
 
+            // Seluruh pemain dalam satu sesi mencatat rekor sebagai satu tim (User ID 1 = Tim Kelompok 8)
+            PlayerPrefs.SetInt("ACTIVE_USER_ID", 1);
+
             // Mulai timer saat pemain lokal spawn
             ResetAndStartTimer();
+
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.OnGameOver += HandleGameOver;
+            }
         }
         else
         {
@@ -54,14 +63,19 @@ public class PlayerController : NetworkBehaviour
     private void OnDestroy()
     {
         SharedCamera.activePlayers.Remove(transform);
+
+        if (isLocalPlayer && GameManager.Instance != null)
+        {
+            GameManager.Instance.OnGameOver -= HandleGameOver;
+        }
     }
 
     private void Update()
     {
         if (!isLocalPlayer) return;
 
-        // Jalankan Timer dan izinkan bergerak HANYA jika game sedang aktif (belum finish)
-        if (isTimerRunning)
+        // Jalankan Timer dan izinkan bergerak HANYA jika pemain belum mencapai finis
+        if (isTimerRunning && !hasReachedFinish)
         {
             elapsedTime += Time.deltaTime;
             UpdateTimerDisplay(elapsedTime);
@@ -81,11 +95,12 @@ public class PlayerController : NetworkBehaviour
     {
         elapsedTime = 0f;
         isTimerRunning = true;
+        hasReachedFinish = false;
     }
 
     private void UpdateTimerDisplay(float timeInSeconds)
     {
-        if (scoreText != null)
+        if (scoreText != null && !hasReachedFinish)
         {
             scoreText.text = "Time: " + FormatTime(timeInSeconds);
         }
@@ -103,19 +118,57 @@ public class PlayerController : NetworkBehaviour
     // Dipanggil saat player menyentuh objek FinishLine
     public void PicuKondisiMenang()
     {
-        if (!isTimerRunning) return; // Mencegah pemicuan ganda
+        if (hasReachedFinish) return; // Mencegah pemicuan ganda
 
-        isTimerRunning = false; // Hentikan timer & hentikan pergerakan
+        hasReachedFinish = true;
+        isTimerRunning = false;
 
-        // Convert waktu detik ke milidetik (misal: 12.34 detik -> 12340 ms)
-        int finalTimeMs = Mathf.RoundToInt(elapsedTime * 1000f);
-        CmdSetScore(finalTimeMs);
+        if (rb != null)
+        {
+            rb.velocity = Vector3.zero;
+        }
 
-        // Panggil Command untuk memberitahu GameManager di Server bahwa player ini menang
-        CmdReportWin();
+        int myTimeMs = Mathf.RoundToInt(elapsedTime * 1000f);
+        CmdReportReachedFinish(netId, myTimeMs);
+    }
 
-        // Kunci kecepatan fisik agar karakter kaku/diam di tempat garis finis
-        rb.velocity = Vector3.zero;
+    // Menampilkan status jika sedang menunggu rekan satu tim
+    public void SetWaitingForTeammate()
+    {
+        if (scoreText != null)
+        {
+            scoreText.text = "Finish! Menunggu teman...";
+        }
+    }
+
+    private void HandleGameOver(bool isTeamWin, int teamFinalTimeMs)
+    {
+        if (isLocalPlayer)
+        {
+            StopTimerAndMovement(teamFinalTimeMs);
+        }
+    }
+
+    public void StopTimerAndMovement(int finalTeamTimeMs = 0)
+    {
+        isTimerRunning = false;
+        hasReachedFinish = true;
+
+        if (finalTeamTimeMs > 0)
+        {
+            score = finalTeamTimeMs;
+            CmdSetScore(finalTeamTimeMs);
+        }
+        else if (score <= 0)
+        {
+            score = Mathf.RoundToInt(elapsedTime * 1000f);
+            CmdSetScore(score);
+        }
+
+        if (rb != null)
+        {
+            rb.velocity = Vector3.zero;
+        }
     }
 
     private void HandleMovement()
@@ -156,12 +209,20 @@ public class PlayerController : NetworkBehaviour
     }
 
     [Command]
-    private void CmdReportWin()
+    private void CmdReportReachedFinish(uint playerNetId, int myTimeMs)
     {
         if (GameManager.Instance != null)
         {
-            // Kirim netId milik GameObject ini ke GameManager di Server
-            GameManager.Instance.TriggerGameOver(netId);
+            GameManager.Instance.PlayerReachedFinish(playerNetId, myTimeMs);
+        }
+    }
+
+    [Command]
+    public void CmdRequestRestart()
+    {
+        if (NetworkServer.active)
+        {
+            NetworkManager.singleton.ServerChangeScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
         }
     }
 

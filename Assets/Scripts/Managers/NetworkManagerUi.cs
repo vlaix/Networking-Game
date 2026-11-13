@@ -41,5 +41,12 @@ public class NetworkManagerUI : MonoBehaviour
         // Menyembunyikan tombol pilihan setelah role dipilih
         hostButton.gameObject.SetActive(false);
         clientButton.gameObject.SetActive(false);
+
+        // Matikan raycastTarget pada background panel koneksi agar tidak memblokir tombol di baliknya
+        Image bg = GetComponentInParent<Image>();
+        if (bg != null)
+        {
+            bg.raycastTarget = false;
+        }
     }
 }
